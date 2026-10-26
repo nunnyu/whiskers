@@ -21,7 +21,7 @@ namespace ZincWhiskers
         const float FallLimit = -30f;
         const float BodyHeight = 0.98f;
         const float BodyRadius = 0.32f;
-        const float EyeHeight = BodyHeight * 0.88f;
+
         const float EyeSmoothing = 18f;
         const float BobAmount = 0.045f;
         const float BobStepsPerMeter = 0.7f;
@@ -48,11 +48,14 @@ namespace ZincWhiskers
 
         readonly NetworkVariable<Vector3> netPosition = new(writePerm: NetworkVariableWritePermission.Owner);
         readonly NetworkVariable<float> netYaw = new(writePerm: NetworkVariableWritePermission.Owner);
+        readonly NetworkVariable<float> netPitch = new(writePerm: NetworkVariableWritePermission.Owner);
 
         static readonly System.Collections.Generic.List<CatPlayer> Spawned = new();
 
         CharacterController controller;
         Transform visual;
+        CatAnimation catAnimation;
+        Vector3 eyeOffset = new Vector3(0f, BodyHeight * 0.88f, 0f);
         Camera view;
         Vector3 velocity;
         float yaw;
@@ -97,7 +100,7 @@ namespace ZincWhiskers
                 }
 
                 yaw = transform.eulerAngles.y;
-                eyeY = transform.position.y + EyeHeight;
+                eyeY = transform.position.y + eyeOffset.y;
                 view = Camera.main;
                 Cursor.lockState = CursorLockMode.Locked;
                 Cursor.visible = false;
@@ -147,6 +150,11 @@ namespace ZincWhiskers
                     float t = 1f - Mathf.Exp(-RemoteSmoothing * Time.deltaTime);
                     transform.position = Vector3.Lerp(transform.position, netPosition.Value, t);
                     transform.rotation = Quaternion.Slerp(transform.rotation, Quaternion.Euler(0f, netYaw.Value, 0f), t);
+                    pitch = Mathf.Lerp(pitch, netPitch.Value, t);
+                }
+                if (catAnimation != null)
+                {
+                    catAnimation.LookPitch = pitch;
                 }
                 UpdateDistanceScale();
             }
@@ -175,7 +183,7 @@ namespace ZincWhiskers
             float smoothing = 1f - Mathf.Exp(-EyeSmoothing * dt);
 
             // Smooths out step-ups so the view glides instead of snapping.
-            eyeY = Mathf.Lerp(eyeY, transform.position.y + EyeHeight, smoothing);
+            eyeY = Mathf.Lerp(eyeY, transform.position.y + eyeOffset.y, smoothing);
             landingDip = Mathf.Lerp(landingDip, 0f, smoothing * 0.5f);
 
             Vector3 flat = new Vector3(velocity.x, 0f, velocity.z);
@@ -183,7 +191,8 @@ namespace ZincWhiskers
             bobPhase += speed * BobStepsPerMeter * dt;
             float bob = Mathf.Sin(bobPhase * Mathf.PI * 2f) * BobAmount * Mathf.Clamp01(speed / WalkSpeed);
 
-            var position = new Vector3(transform.position.x, eyeY + bob + landingDip, transform.position.z);
+            Vector3 eyes = transform.position + Quaternion.Euler(0f, yaw, 0f) * new Vector3(eyeOffset.x, 0f, eyeOffset.z);
+            var position = new Vector3(eyes.x, eyeY + bob + landingDip, eyes.z);
             view.transform.SetPositionAndRotation(position, Quaternion.Euler(pitch, yaw, 0f));
 
             float fov = speed > WalkSpeed + 0.5f ? SprintFieldOfView : BaseFieldOfView;
@@ -306,13 +315,14 @@ namespace ZincWhiskers
             transform.position = position;
             controller.enabled = true;
             velocity = Vector3.zero;
-            eyeY = position.y + EyeHeight;
+            eyeY = position.y + eyeOffset.y;
         }
 
         void ShareState()
         {
             netPosition.Value = transform.position;
             netYaw.Value = yaw;
+            netPitch.Value = pitch;
         }
 
         void OnRemotePositionChanged(Vector3 previous, Vector3 current)
@@ -398,7 +408,31 @@ namespace ZincWhiskers
             Bounds bounds = RendererBounds(renderers);
             instance.transform.position += transform.position - new Vector3(bounds.center.x, bounds.min.y, bounds.center.z);
 
-            instance.AddComponent<CatAnimation>().Play(transform, WalkSpeed);
+            FindEyes(instance.transform);
+            catAnimation = instance.AddComponent<CatAnimation>();
+            catAnimation.Play(transform, WalkSpeed);
+        }
+
+        // First-person view sits where the model's eyes are.
+        void FindEyes(Transform instance)
+        {
+            var head = FindChild(instance, "Head");
+            var filter = head != null ? head.GetComponent<MeshFilter>() : null;
+            var renderer = head != null ? head.GetComponent<Renderer>() : null;
+            if (filter == null || renderer == null)
+            {
+                return;
+            }
+            var materials = renderer.sharedMaterials;
+            for (int i = 0; i < materials.Length && i < filter.sharedMesh.subMeshCount; i++)
+            {
+                if (materials[i] != null && materials[i].name.StartsWith("Eye"))
+                {
+                    Vector3 eyes = head.TransformPoint(filter.sharedMesh.GetSubMesh(i).bounds.center);
+                    eyeOffset = transform.InverseTransformPoint(eyes);
+                    return;
+                }
+            }
         }
 
         // The tail is at the back, so turn the model until the tail points away from where the cat faces.
@@ -445,14 +479,21 @@ namespace ZincWhiskers
         static Material ToWorldMaterial(Material source, Texture2D breed)
         {
             string name = source != null ? source.name : "";
+            Material material;
             if (name.StartsWith("Fur"))
             {
-                return WorldMaterials.Create(breed, Color.white);
+                material = WorldMaterials.Create(breed, Color.white);
             }
-            Color color = Color.white;
-            if (source != null && source.HasProperty("_BaseColor")) color = source.GetColor("_BaseColor");
-            else if (source != null && source.HasProperty("_Color")) color = source.color;
-            return WorldMaterials.Create((Texture)null, color);
+            else
+            {
+                Color color = Color.white;
+                if (source != null && source.HasProperty("_BaseColor")) color = source.GetColor("_BaseColor");
+                else if (source != null && source.HasProperty("_Color")) color = source.color;
+                material = WorldMaterials.Create((Texture)null, color);
+            }
+            // Keep the original name; FindEyes looks for the eye material by it.
+            material.name = name;
+            return material;
         }
 
         GameObject CreatePart(PrimitiveType shape, Vector3 position, Vector3 size, Material material)

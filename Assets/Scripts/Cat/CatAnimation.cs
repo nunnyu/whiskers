@@ -2,7 +2,8 @@ using UnityEngine;
 
 namespace ZincWhiskers
 {
-    // Animates the cat's separate parts in code: legs and arms swing, the body bobs, the tail sways, idle breathing.
+    // Animates the cat's separate parts in code: legs and arms swing, the body bobs, the head follows where the
+    // player looks, idle breathing. The tail is simulated separately by CatTail.
     // Driven by how fast the model actually moves, so it works the same for local and remote cats.
     public class CatAnimation : MonoBehaviour
     {
@@ -12,9 +13,7 @@ namespace ZincWhiskers
         const float ArmDroop = 65f;
         const float BobHeight = 0.05f;
         const float PaceSmoothing = 10f;
-        const float TailStiffness = 45f;
-        const float TailDamping = 6f;
-        const float TailDroopPerBone = 22f;
+        const float MaxHeadTilt = 45f;
         const int MaxTailBones = 8;
 
         class Part
@@ -37,12 +36,9 @@ namespace ZincWhiskers
         float pace;
         float phase;
         float idleTime;
-        float lastYaw;
-        Part[] tailBones;
-        float[] tailYaw;
-        float[] tailYawVelocity;
-        float[] tailPitch;
-        float[] tailPitchVelocity;
+
+        // Where the player is looking up or down, in degrees; positive is down.
+        public float LookPitch { get; set; }
 
         public void Play(Transform cat, float walkSpeed)
         {
@@ -53,22 +49,19 @@ namespace ZincWhiskers
             tail = Find("Tail");
             arms = new[] { Find("LeftArm"), Find("RightArm") };
             legs = new[] { Find("LeftLeg"), Find("RightLeg") };
-            var bones = new System.Collections.Generic.List<Part>();
+            var bones = new System.Collections.Generic.List<Transform>();
             for (int i = 0; i < MaxTailBones; i++)
             {
                 var bone = Find("TailBone" + i);
                 if (bone == null) break;
-                bones.Add(bone);
+                bones.Add(bone.Transform);
             }
-            // Without bones the whole tail swings as one piece.
-            tailBones = bones.Count > 0 ? bones.ToArray() : new[] { tail };
-            tailYaw = new float[tailBones.Length];
-            tailYawVelocity = new float[tailBones.Length];
-            tailPitch = new float[tailBones.Length];
-            tailPitchVelocity = new float[tailBones.Length];
+            if (bones.Count > 0)
+            {
+                gameObject.AddComponent<CatTail>().Setup(cat, bones.ToArray());
+            }
             upperBody = new[] { body, head, Find("TailRig") ?? tail, arms[0], arms[1] };
             lastPosition = owner.position;
-            lastYaw = owner.eulerAngles.y;
             idleTime = Random.value * 10f;
         }
 
@@ -102,11 +95,7 @@ namespace ZincWhiskers
 
             Vector3 moved = owner.position - lastPosition;
             lastPosition = owner.position;
-            float verticalSpeed = moved.y / dt;
             moved.y = 0f;
-            float turnRate = Mathf.DeltaAngle(lastYaw, owner.eulerAngles.y) / dt;
-            lastYaw = owner.eulerAngles.y;
-            Vector3 localVelocity = owner.InverseTransformDirection(moved / dt);
             float speed = moved.magnitude / dt;
             pace = Mathf.Lerp(pace, speed / fullSpeed, 1f - Mathf.Exp(-PaceSmoothing * dt));
             float walk = Mathf.Clamp01(pace);
@@ -130,22 +119,8 @@ namespace ZincWhiskers
                 var droop = Quaternion.FromToRotation(outward, Vector3.Slerp(outward, -up, (ArmDroop + breathe * 2f) / 90f));
                 SetRotation(arm, Quaternion.AngleAxis(-stride * arm.Side * ArmSwing * walk, right) * droop);
             }
-            // A limp tail: each bone hangs down a bit and springs toward its target, softer toward the tip,
-            // so it trails behind turns and sideways steps and flops up when falling.
-            float sway = Mathf.Sin(idleTime * (1.6f + walk * 2f)) * 8f;
-            float yawTarget = Mathf.Clamp(-turnRate * 0.15f - localVelocity.x * 10f, -70f, 70f) + sway;
-            float pitchTarget = Mathf.Clamp(-walk * 10f - verticalSpeed * 4f, -45f, 60f);
-            float share = 1f / tailBones.Length;
-            for (int i = 0; i < tailBones.Length; i++)
-            {
-                if (tailBones[i] == null) continue;
-                float stiffness = TailStiffness / (1f + i * 0.6f);
-                float droop = tailBones.Length > 1 ? -TailDroopPerBone : -TailDroopPerBone * 2f;
-                Spring(ref tailYaw[i], ref tailYawVelocity[i], yawTarget * share, stiffness, dt);
-                Spring(ref tailPitch[i], ref tailPitchVelocity[i], droop + pitchTarget * share, stiffness, dt);
-                SetRotation(tailBones[i], Quaternion.AngleAxis(tailYaw[i], up) * Quaternion.AngleAxis(tailPitch[i], right));
-            }
-            SetRotation(head, Quaternion.AngleAxis(breathe * 2f + Mathf.Abs(stride) * 4f * walk, right));
+            float tilt = Mathf.Clamp(LookPitch, -MaxHeadTilt, MaxHeadTilt);
+            SetRotation(head, Quaternion.AngleAxis(tilt + breathe * 2f + Mathf.Abs(stride) * 4f * walk, right));
 
             float bob = Mathf.Abs(Mathf.Cos(phase * Mathf.PI * 2f)) * BobHeight * walk + breathe * 0.006f;
             foreach (var part in upperBody)
@@ -155,13 +130,6 @@ namespace ZincWhiskers
                     part.Transform.localPosition = part.RestPosition + part.Transform.parent.InverseTransformVector(up * bob);
                 }
             }
-        }
-
-        static void Spring(ref float angle, ref float velocity, float target, float stiffness, float dt)
-        {
-            velocity += (target - angle) * stiffness * dt;
-            velocity *= Mathf.Exp(-TailDamping * dt);
-            angle += velocity * dt;
         }
 
         static void SetRotation(Part part, Quaternion worldRotation)

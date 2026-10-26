@@ -17,6 +17,7 @@ TEXTURE_SIZE = 256
 EYE_RADIUS = 0.24
 EYE_SPACING = 0.56
 EYE_DROP = 0.32
+EYE_DEPTH = -0.3
 TAIL_BONES = 4
 
 BREEDS = {
@@ -244,7 +245,7 @@ for side in (-1, 1):
     if hit is None:
         continue
     sphere = bmesh.ops.create_uvsphere(bm, u_segments=12, v_segments=8, radius=EYE_RADIUS)
-    bmesh.ops.translate(bm, vec=hit + normal * EYE_RADIUS * 0.35, verts=sphere['verts'])
+    bmesh.ops.translate(bm, vec=hit + normal * EYE_RADIUS * EYE_DEPTH, verts=sphere['verts'])
     for f in {f for v in sphere['verts'] for f in v.link_faces}:
         f.material_index = 1
         f.smooth = True
