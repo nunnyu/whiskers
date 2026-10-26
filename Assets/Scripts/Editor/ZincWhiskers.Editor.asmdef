@@ -1,0 +1,18 @@
+{
+    "name": "ZincWhiskers.Editor",
+    "rootNamespace": "ZincWhiskers",
+    "references": [
+        "ZincWhiskers"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

@@ -10,14 +10,19 @@ only_breed = args[2] if len(args) > 2 else None
 os.makedirs(breed_dir, exist_ok=True)
 
 BODY_SCALE = 0.72
-TEXTURE_SIZE = 128
-EYE_RADIUS = 0.42
-EYE_SPACING = 0.5
+BODY_SQUASH = 0.7
+LEG_SQUASH = 0.75
+TAIL_LENGTH = 0.5
+TEXTURE_SIZE = 256
+EYE_RADIUS = 0.24
+EYE_SPACING = 0.56
+EYE_DROP = 0.32
+TAIL_BONES = 4
 
 BREEDS = {
     # base, stripes, belly/socks, patch 1, patch 2, stripe strength, belly strength, sock strength, patch strengths
-    'Orange': ((0.85, 0.42, 0.12), (0.55, 0.22, 0.05), (0.98, 0.88, 0.7), (0, 0, 0), (0, 0, 0), 1.0, 0.8, 0.0, 0.0, 0.0),
-    'Grey': ((0.5, 0.5, 0.52), (0.22, 0.22, 0.25), (0.88, 0.88, 0.86), (0, 0, 0), (0, 0, 0), 1.0, 0.7, 0.0, 0.0, 0.0),
+    'Orange': ((0.85, 0.42, 0.12), (0.55, 0.22, 0.05), (0.98, 0.88, 0.7), (0, 0, 0), (0, 0, 0), 0.55, 0.7, 0.0, 0.0, 0.0),
+    'Grey': ((0.5, 0.5, 0.52), (0.22, 0.22, 0.25), (0.88, 0.88, 0.86), (0, 0, 0), (0, 0, 0), 0.55, 0.6, 0.0, 0.0, 0.0),
     'Tuxedo': ((0.06, 0.06, 0.07), (0.06, 0.06, 0.07), (0.97, 0.97, 0.95), (0, 0, 0), (0, 0, 0), 0.0, 1.0, 1.0, 0.0, 0.0),
     'Calico': ((0.97, 0.95, 0.9), (0.97, 0.95, 0.9), (0.97, 0.95, 0.9), (0.9, 0.48, 0.15), (0.08, 0.07, 0.07), 0.0, 0.0, 0.0, 1.0, 1.0),
 }
@@ -78,7 +83,8 @@ def joint(o):
 body = bpy.data.objects['Body']
 lo, hi = bounds(body)
 body_center = (lo + hi) / 2
-shrink = (mathutils.Matrix.Translation(body_center) @ mathutils.Matrix.Scale(BODY_SCALE, 4)
+shrink = (mathutils.Matrix.Translation(body_center)
+          @ mathutils.Matrix.Diagonal((BODY_SCALE, BODY_SCALE, BODY_SCALE * BODY_SQUASH, 1))
           @ mathutils.Matrix.Translation(-body_center))
 joints = {o.name: joint(o) for o in scene.objects if o.type == 'MESH'}
 body.data.transform(shrink)
@@ -86,6 +92,16 @@ for name, point in joints.items():
     if name != 'Body':
         bpy.data.objects[name].data.transform(mathutils.Matrix.Translation(shrink @ point - point))
 joints = {name: shrink @ point for name, point in joints.items()}
+
+# Shorter legs (squashed down from the hip) and a shorter tail (pulled in toward its base).
+def scale_about(o, point, scale):
+    o.data.transform(mathutils.Matrix.Translation(point) @ mathutils.Matrix.Diagonal((*scale, 1))
+                     @ mathutils.Matrix.Translation(-point))
+for name in ('LeftLeg', 'RightLeg'):
+    scale_about(bpy.data.objects[name], joints[name], (1, 1, LEG_SQUASH))
+scale_about(bpy.data.objects['Tail'], joints['Tail'], (1, TAIL_LENGTH, 1))
+all_z = [v.co.z for o in scene.objects if o.type == 'MESH' for v in o.data.vertices]
+print('HEIGHT', round(max(all_z) - min(all_z), 3))
 
 parts = [o for o in scene.objects if o.type == 'MESH']
 
@@ -134,9 +150,10 @@ def mix(a, b, factor):
     links.new(a, n.inputs[6]); links.new(b, n.inputs[7])
     return n.outputs[2]
 
-def ramp(fac, at):
-    n = nodes.new('ShaderNodeValToRGB'); n.color_ramp.interpolation = 'CONSTANT'
-    n.color_ramp.elements[1].position = at
+def ramp(fac, at, soft):
+    n = nodes.new('ShaderNodeValToRGB'); n.color_ramp.interpolation = 'LINEAR'
+    n.color_ramp.elements[0].position = at - soft
+    n.color_ramp.elements[1].position = at + soft
     links.new(fac, n.inputs[0]); return n.outputs[0]
 
 x, y, z = xyz.outputs[0], xyz.outputs[1], xyz.outputs[2]
@@ -150,15 +167,15 @@ diagonal = nodes.new('ShaderNodeCombineXYZ')
 links.new(x, diagonal.inputs[0]); links.new(y, diagonal.inputs[1])
 links.new(math('ADD', z, math('MULTIPLY', y, 0.8)), diagonal.inputs[2])
 links.new(diagonal.outputs[0], wave.inputs['Vector'])
-stripes = ramp(wave.outputs['Fac'], 0.62)
+stripes = ramp(wave.outputs['Fac'], 0.62, 0.12)
 
 noise_a = nodes.new('ShaderNodeTexNoise'); noise_a.inputs['Scale'].default_value = 0.6
 noise_b = nodes.new('ShaderNodeTexNoise'); noise_b.inputs['Scale'].default_value = 0.7
 noise_b.noise_dimensions = '4D'; noise_b.inputs['W'].default_value = 5
 links.new(geometry.outputs['Position'], noise_a.inputs['Vector'])
 links.new(geometry.outputs['Position'], noise_b.inputs['Vector'])
-patch_a = ramp(noise_a.outputs['Fac'], 0.53)
-patch_b = ramp(noise_b.outputs['Fac'], 0.56)
+patch_a = ramp(noise_a.outputs['Fac'], 0.53, 0.04)
+patch_b = ramp(noise_b.outputs['Fac'], 0.56, 0.04)
 
 front = math('MULTIPLY', math('SUBTRACT', math('MULTIPLY', y, -1), 0.15), 3, clamp=True)
 chest = math('MULTIPLY', math('SUBTRACT', head_lo.z + 0.2, z), 3, clamp=True)
@@ -211,7 +228,7 @@ for o in parts:
     o.data.materials.clear(); o.data.materials.append(fur)
 nodes.remove(image_node)
 
-# Big eyes on the front of the head, each with a little shine.
+# Two round black eyes bulging out of the front of the head.
 def flat_material(name, color):
     m = bpy.data.materials.new(name); m.use_nodes = True
     m.node_tree.nodes['Principled BSDF'].inputs['Base Color'].default_value = (*color, 1)
@@ -219,25 +236,18 @@ def flat_material(name, color):
 
 head = bpy.data.objects['Head']
 head.data.materials.append(flat_material('Eye', (0.02, 0.02, 0.03)))
-head.data.materials.append(flat_material('EyeShine', (1, 1, 1)))
 tree = BVHTree.FromObject(head, bpy.context.evaluated_depsgraph_get())
-eye_height = head_mid - 0.05
+eye_height = head_mid - EYE_DROP
 bm = bmesh.new(); bm.from_mesh(head.data)
 for side in (-1, 1):
     hit, normal, _, _ = tree.ray_cast(mathutils.Vector((side * EYE_SPACING, -5, eye_height)), mathutils.Vector((0, 1, 0)))
     if hit is None:
         continue
-    facing = normal.to_track_quat('Y', 'Z').to_matrix().to_4x4()
-    for radius, depth, offset, material in ((EYE_RADIUS, 0.3, mathutils.Vector((0, 0, 0)), 1),
-                                            (EYE_RADIUS * 0.28, 0.5, mathutils.Vector((side * -0.13, 0.35, 0.17)), 2)):
-        sphere = bmesh.ops.create_uvsphere(bm, u_segments=16, v_segments=10, radius=1)
-        verts = sphere['verts']
-        shape = mathutils.Matrix.Diagonal((radius, radius * depth, radius * 1.2, 1))
-        place = mathutils.Matrix.Translation(hit + normal * (radius * depth * 0.4) + facing.to_3x3() @ mathutils.Vector((offset.x, offset.y * EYE_RADIUS, offset.z)))
-        bmesh.ops.transform(bm, matrix=place @ facing @ shape, verts=verts)
-        for f in {f for v in verts for f in v.link_faces}:
-            f.material_index = material
-            f.smooth = True
+    sphere = bmesh.ops.create_uvsphere(bm, u_segments=12, v_segments=8, radius=EYE_RADIUS)
+    bmesh.ops.translate(bm, vec=hit + normal * EYE_RADIUS * 0.35, verts=sphere['verts'])
+    for f in {f for v in sphere['verts'] for f in v.link_faces}:
+        f.material_index = 1
+        f.smooth = True
 bm.to_mesh(head.data); bm.free()
 
 for o in parts:
@@ -246,9 +256,49 @@ for o in parts:
     o.location = p
     print('PART', o.name, tuple(round(v, 3) for v in o.location), len(o.data.vertices))
 
-bpy.ops.export_scene.fbx(filepath=fbx_path, use_selection=False, object_types={'MESH'},
+# A chain of bones through the tail so it can bend and flop instead of sticking out stiff.
+tail = bpy.data.objects['Tail']
+pivot = tail.location.copy()
+tip = max((tail.matrix_world @ v.co for v in tail.data.vertices), key=lambda v: (v - pivot).length)
+axis = tip - pivot
+length = axis.length
+axis.normalize()
+rig_data = bpy.data.armatures.new('TailRig')
+rig = bpy.data.objects.new('TailRig', rig_data)
+scene.collection.objects.link(rig)
+rig.location = pivot
+bpy.ops.object.select_all(action='DESELECT')
+rig.select_set(True)
+view_layer.objects.active = rig
+bpy.ops.object.mode_set(mode='EDIT')
+previous = None
+for i in range(TAIL_BONES):
+    bone = rig_data.edit_bones.new(f'TailBone{i}')
+    bone.head = axis * (length * i / TAIL_BONES)
+    bone.tail = axis * (length * (i + 1) / TAIL_BONES)
+    if previous is not None:
+        bone.parent = previous
+        bone.use_connect = True
+    previous = bone
+bpy.ops.object.mode_set(mode='OBJECT')
+
+groups = [tail.vertex_groups.new(name=f'TailBone{i}') for i in range(TAIL_BONES)]
+for v in tail.data.vertices:
+    along = ((tail.matrix_world @ v.co) - pivot).dot(axis) / length * TAIL_BONES - 0.5
+    along = max(0.0, min(TAIL_BONES - 1.0, along))
+    first = int(along)
+    second = min(first + 1, TAIL_BONES - 1)
+    blend = along - first
+    groups[first].add([v.index], 1 - blend, 'REPLACE')
+    if second != first:
+        groups[second].add([v.index], blend, 'REPLACE')
+tail.modifiers.new('Armature', 'ARMATURE').object = rig
+tail.parent = rig
+tail.matrix_parent_inverse = rig.matrix_world.inverted()
+
+bpy.ops.export_scene.fbx(filepath=fbx_path, use_selection=False, object_types={'MESH', 'ARMATURE'},
                          apply_unit_scale=True, apply_scale_options='FBX_SCALE_ALL',
-                         bake_space_transform=True, axis_forward='-Z', axis_up='Y',
+                         bake_space_transform=False, axis_forward='-Z', axis_up='Y',
                          mesh_smooth_type='FACE', add_leaf_bones=False, bake_anim=False,
                          path_mode='STRIP')
 print('EXPORTED', fbx_path)

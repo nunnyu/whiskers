@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using Unity.Netcode;
@@ -31,6 +32,13 @@ namespace ZincWhiskers
             networkManager.OnClientStopped += OnClientStopped;
         }
 
+        void OnApplicationQuit()
+        {
+            // Without this the lobby outlives the host and keeps handing out a dead join code.
+            Session?.LeaveAsync();
+            Session = null;
+        }
+
         void OnDestroy()
         {
             if (networkManager != null)
@@ -47,6 +55,7 @@ namespace ZincWhiskers
         {
             await Run("Hosting...", async () =>
             {
+                await LeaveLeftoverSessions();
                 var options = new SessionOptions { MaxPlayers = MaxPlayers }.WithRelayNetwork();
                 Session = await MultiplayerService.Instance.CreateSessionAsync(options);
             });
@@ -62,6 +71,7 @@ namespace ZincWhiskers
             }
             await Run("Joining...", async () =>
             {
+                await LeaveLeftoverSessions();
                 Session = await MultiplayerService.Instance.JoinSessionByCodeAsync(code);
             });
         }
@@ -88,7 +98,7 @@ namespace ZincWhiskers
             catch (Exception e)
             {
                 Debug.LogException(e);
-                Status = e.Message;
+                Status = e is AggregateException aggregate ? aggregate.GetBaseException().Message : e.Message;
                 Session = null;
             }
             finally
@@ -104,6 +114,22 @@ namespace ZincWhiskers
             if (session != null)
             {
                 await session.LeaveAsync();
+            }
+        }
+
+        // Sessions from an earlier run can linger when play mode keeps scripts loaded between runs.
+        static async Task LeaveLeftoverSessions()
+        {
+            foreach (var leftover in MultiplayerService.Instance.Sessions.Values.ToList())
+            {
+                try
+                {
+                    await leftover.LeaveAsync();
+                }
+                catch (Exception e)
+                {
+                    Debug.LogWarning($"Couldn't leave old session: {e.Message}");
+                }
             }
         }
 

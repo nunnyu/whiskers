@@ -8,12 +8,18 @@ namespace ZincWhiskers
     {
         public static readonly List<LightSource> Active = new();
 
-        public Color color = new Color(1f, 0.72f, 0.42f);
+        public Color color = new Color(1f, 0.8f, 0.58f);
         public float intensity = 1.8f;
         public float range = 10f;
         [Range(0f, 1f)] public float flicker = 0.15f;
 
         float seed;
+
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        static void ResetActive()
+        {
+            Active.Clear();
+        }
 
         public Color CurrentColor
         {

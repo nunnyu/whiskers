@@ -203,7 +203,7 @@ namespace ZincWhiskers
 
         static void PlaceSupports(Transform parent, List<Ring> rings)
         {
-            var wood = WorldMaterials.Create("Wood", Color.white);
+            var wood = WorldMaterials.WithSaturation(WorldMaterials.Create("Wood", Color.white), 0.45f);
             for (int i = 4; i < rings.Count - 4; i += 12)
             {
                 var ring = rings[i];
@@ -221,26 +221,45 @@ namespace ZincWhiskers
                 }
                 Vector3 beamCenter = new Vector3(ring.Center.x, ring.Floor + height, ring.Center.z);
                 CreateBlock(parent, "Support Beam", beamCenter, new Vector3(halfWidth * 2f + 0.4f, 0.2f, 0.22f), rotation, wood);
+                HangLantern(parent, beamCenter - Vector3.up * 0.1f, 0.4f, wood);
             }
         }
 
+        // The wide chambers have no supports, so their lanterns hang from the ceiling instead.
         static void PlaceLanterns(Transform parent, List<Ring> rings)
         {
-            var glass = WorldMaterials.Create((Texture)null, Color.black, new Color(1f, 0.75f, 0.4f));
-            var wood = WorldMaterials.Create("Wood", Color.white);
-            for (int i = 10; i < rings.Count; i += 16)
+            var wood = WorldMaterials.WithSaturation(WorldMaterials.Create("Wood", Color.white), 0.45f);
+            for (int i = 6; i < rings.Count; i += 14)
             {
                 var ring = rings[i];
-                Vector3 position = ring.Center + Vector3.up * ring.Radius * 0.3f;
-                var lantern = CreateBlock(parent, "Lantern", position, Vector3.one * 0.18f, Quaternion.identity, glass);
-                float ropeLength = ring.Radius * 0.7f + 0.3f;
-                var rope = CreateBlock(parent, "Lantern Rope", position + Vector3.up * (ropeLength * 0.5f + 0.09f), new Vector3(0.03f, ropeLength, 0.03f), Quaternion.identity, wood);
-                Object.Destroy(lantern.GetComponent<Collider>());
-                Object.Destroy(rope.GetComponent<Collider>());
-                var light = lantern.AddComponent<LightSource>();
-                light.range = 13f;
-                light.intensity = 1.8f;
+                if (ring.Radius <= 3f)
+                {
+                    continue;
+                }
+                Vector3 top = ring.Center + Vector3.up * ring.Radius * 0.9f;
+                HangLantern(parent, top, ring.Radius * 0.6f, wood);
             }
+        }
+
+        static void HangLantern(Transform parent, Vector3 hangPoint, float ropeLength, Material rope)
+        {
+            var glass = WorldMaterials.WithFog(WorldMaterials.Create((Texture)null, Color.black, new Color(0.85f, 0.6f, 0.34f)), 0f);
+            Vector3 position = hangPoint - Vector3.up * (ropeLength + 0.12f);
+            var lantern = CreateBlock(parent, "Lantern", position, Vector3.one * 0.24f, Quaternion.identity, glass);
+            var cord = CreateBlock(parent, "Lantern Rope", hangPoint - Vector3.up * ropeLength * 0.5f, new Vector3(0.03f, ropeLength, 0.03f), Quaternion.identity, rope);
+            Object.Destroy(lantern.GetComponent<Collider>());
+            Object.Destroy(cord.GetComponent<Collider>());
+
+            var halo = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            halo.name = "Lantern Glow";
+            Object.Destroy(halo.GetComponent<Collider>());
+            halo.transform.SetParent(lantern.transform, false);
+            halo.transform.localScale = Vector3.one * (1.8f / 0.24f);
+            halo.GetComponent<Renderer>().sharedMaterial = WorldMaterials.CreateGlow(new Color(1f, 0.68f, 0.38f), 0.5f);
+
+            var light = lantern.AddComponent<LightSource>();
+            light.range = 13f;
+            light.intensity = 2f;
         }
 
         static void PlaceCoal(Transform parent, List<Ring> rings, System.Random random)

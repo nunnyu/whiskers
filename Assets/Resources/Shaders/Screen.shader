@@ -24,6 +24,11 @@ Shader "Hidden/Zinc Whiskers/Screen"
             float _Dither;
             float _Grain;
             float _Vignette;
+            float4 _OutlineColor;
+            float _Outlines;
+            float4 _GradeTint;
+            float _GradeSaturation;
+            float _BlurRadius;
 
             struct v2f
             {
@@ -53,10 +58,45 @@ Shader "Hidden/Zinc Whiskers/Screen"
             fixed4 frag(v2f i) : SV_Target
             {
                 float2 pixel = floor(i.uv * _MainTex_TexelSize.zw);
-                float3 color = tex2D(_MainTex, i.uv).rgb;
+                float2 uv = (pixel + 0.5) * _MainTex_TexelSize.xy;
+                float4 source = tex2D(_MainTex, uv);
+                float3 color = source.rgb;
+                float2 t = _MainTex_TexelSize.xy;
+                float2 r = t * _BlurRadius;
+
+                // Distant world pixels get blurred; characters (alpha above 0.5) stay sharp.
+                float blur = source.a < 0.5 ? saturate(source.a / 0.45) : 0;
+                if (blur > 0.01)
+                {
+                    float3 sum = 0;
+                    for (int x = -1; x <= 1; x++)
+                    {
+                        for (int y = -1; y <= 1; y++)
+                        {
+                            sum += tex2D(_MainTex, uv + r * float2(x, y)).rgb;
+                        }
+                    }
+                    sum += tex2D(_MainTex, uv + r * float2(2, 0)).rgb + tex2D(_MainTex, uv - r * float2(2, 0)).rgb;
+                    sum += tex2D(_MainTex, uv + r * float2(0, 2)).rgb + tex2D(_MainTex, uv - r * float2(0, 2)).rgb;
+                    color = lerp(color, sum / 13, blur);
+                }
             #if !defined(UNITY_COLORSPACE_GAMMA)
                 color = LinearToGammaSpace(color);
             #endif
+
+                // One-pixel outline around anything that marked itself as a character.
+                if (_Outlines > 0.5 && source.a < 0.5)
+                {
+                    float neighbor = max(max(tex2D(_MainTex, uv + float2(t.x, 0)).a, tex2D(_MainTex, uv - float2(t.x, 0)).a),
+                                         max(tex2D(_MainTex, uv + float2(0, t.y)).a, tex2D(_MainTex, uv - float2(0, t.y)).a));
+                    if (neighbor > 0.5)
+                    {
+                        color = _OutlineColor.rgb;
+                    }
+                }
+
+                // Dark, washed-out grade over everything.
+                color = lerp(dot(color, float3(0.299, 0.587, 0.114)).xxx, color, _GradeSaturation) * _GradeTint.rgb;
 
                 float frame = floor(_Time.y * 12);
                 color += (hash(pixel + frame * 17.31) - 0.5) * _Grain;

@@ -19,7 +19,7 @@ namespace ZincWhiskers
         const float LookSensitivity = 0.1f;
         const float RemoteSmoothing = 15f;
         const float FallLimit = -30f;
-        const float BodyHeight = 1.1f;
+        const float BodyHeight = 0.98f;
         const float BodyRadius = 0.32f;
         const float EyeHeight = BodyHeight * 0.88f;
         const float EyeSmoothing = 18f;
@@ -27,6 +27,10 @@ namespace ZincWhiskers
         const float BobStepsPerMeter = 0.7f;
         const float BaseFieldOfView = 78f;
         const float SprintFieldOfView = 86f;
+        const float PersonalSpace = BodyRadius * 2.2f;
+        const float PushStrength = 25f;
+        const float GrowStartDistance = 10f;
+        const float MaxGrow = 2.2f;
         const string ModelPath = "Cat/Cat";
         const string BreedPath = "Cat/Breeds/";
         static readonly string[] Breeds = { "Orange", "Grey", "Tuxedo", "Calico" };
@@ -45,7 +49,10 @@ namespace ZincWhiskers
         readonly NetworkVariable<Vector3> netPosition = new(writePerm: NetworkVariableWritePermission.Owner);
         readonly NetworkVariable<float> netYaw = new(writePerm: NetworkVariableWritePermission.Owner);
 
+        static readonly System.Collections.Generic.List<CatPlayer> Spawned = new();
+
         CharacterController controller;
+        Transform visual;
         Camera view;
         Vector3 velocity;
         float yaw;
@@ -63,8 +70,15 @@ namespace ZincWhiskers
             return new Vector3((index - 1.5f) * 1.5f, 0.1f, 0f);
         }
 
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        static void ResetSpawned()
+        {
+            Spawned.Clear();
+        }
+
         public override void OnNetworkSpawn()
         {
+            Spawned.Add(this);
             BuildBody();
 
             if (IsOwner)
@@ -76,7 +90,7 @@ namespace ZincWhiskers
                 controller.stepOffset = 0.35f;
                 controller.slopeLimit = 50f;
 
-                // First person: hide our own body but keep its lantern light.
+                // First person: hide our own body.
                 foreach (var renderer in GetComponentsInChildren<Renderer>())
                 {
                     renderer.enabled = false;
@@ -102,6 +116,7 @@ namespace ZincWhiskers
 
         public override void OnNetworkDespawn()
         {
+            Spawned.Remove(this);
             if (IsOwner)
             {
                 Cursor.lockState = CursorLockMode.None;
@@ -125,12 +140,29 @@ namespace ZincWhiskers
             {
                 UpdateOwner();
             }
-            else if (hasRemoteState)
+            else
             {
-                float t = 1f - Mathf.Exp(-RemoteSmoothing * Time.deltaTime);
-                transform.position = Vector3.Lerp(transform.position, netPosition.Value, t);
-                transform.rotation = Quaternion.Slerp(transform.rotation, Quaternion.Euler(0f, netYaw.Value, 0f), t);
+                if (hasRemoteState)
+                {
+                    float t = 1f - Mathf.Exp(-RemoteSmoothing * Time.deltaTime);
+                    transform.position = Vector3.Lerp(transform.position, netPosition.Value, t);
+                    transform.rotation = Quaternion.Slerp(transform.rotation, Quaternion.Euler(0f, netYaw.Value, 0f), t);
+                }
+                UpdateDistanceScale();
             }
+        }
+
+        // Only on other players' screens: far cats are drawn a bit bigger so they don't vanish into pixels.
+        void UpdateDistanceScale()
+        {
+            var camera = Camera.main;
+            if (camera == null || visual == null)
+            {
+                return;
+            }
+            float distance = Vector3.Distance(camera.transform.position, transform.position);
+            float grow = Mathf.Clamp(distance / GrowStartDistance, 1f, MaxGrow);
+            visual.localScale = Vector3.one * grow;
         }
 
         void LateUpdate()
@@ -219,7 +251,7 @@ namespace ZincWhiskers
             vertical += Gravity * (vertical < 0f ? FallGravityMultiplier : 1f) * dt;
 
             velocity = new Vector3(horizontal.x, vertical, horizontal.z);
-            var flags = controller.Move(velocity * dt);
+            var flags = controller.Move((velocity + PushFromOtherCats()) * dt);
             if ((flags & CollisionFlags.Above) != 0 && velocity.y > 0f)
             {
                 velocity.y = 0f;
@@ -238,6 +270,34 @@ namespace ZincWhiskers
                 Teleport(SpawnPoint((int)OwnerClientId % SessionNetwork.MaxPlayers));
             }
             ShareState();
+        }
+
+        // Cats overlapping each other get nudged apart, harder the deeper the overlap. Every owner pushes
+        // only itself, so two cats bumping both give way a little instead of acting like walls.
+        Vector3 PushFromOtherCats()
+        {
+            Vector3 push = Vector3.zero;
+            foreach (var other in Spawned)
+            {
+                if (other == this)
+                {
+                    continue;
+                }
+                Vector3 offset = transform.position - other.transform.position;
+                if (Mathf.Abs(offset.y) > BodyHeight)
+                {
+                    continue;
+                }
+                offset.y = 0f;
+                float distance = offset.magnitude;
+                if (distance >= PersonalSpace)
+                {
+                    continue;
+                }
+                Vector3 away = distance > 0.001f ? offset / distance : Quaternion.Euler(0f, OwnerClientId * 90f, 0f) * Vector3.forward;
+                push += away * (PersonalSpace - distance) * PushStrength;
+            }
+            return push;
         }
 
         void Teleport(Vector3 position)
@@ -280,6 +340,8 @@ namespace ZincWhiskers
         void BuildBody()
         {
             Color fur = FurColors[OwnerClientId % (ulong)FurColors.Length];
+            visual = new GameObject("Visual").transform;
+            visual.SetParent(transform, false);
 
             var model = Resources.Load<GameObject>(ModelPath);
             if (model != null)
@@ -289,19 +351,16 @@ namespace ZincWhiskers
             else
             {
                 CreatePart(PrimitiveType.Capsule, new Vector3(0f, BodyHeight / 2f, 0f),
-                    new Vector3(BodyRadius * 2f, BodyHeight / 2f, BodyRadius * 2f), WorldMaterials.Create((Texture)null, fur));
+                    new Vector3(BodyRadius * 2f, BodyHeight / 2f, BodyRadius * 2f), WorldMaterials.MakeCharacter(WorldMaterials.Create((Texture)null, fur)));
                 CreatePart(PrimitiveType.Cube, new Vector3(0f, BodyHeight * 0.75f, BodyRadius),
-                    Vector3.one * 0.12f, WorldMaterials.Create((Texture)null, Color.Lerp(fur, Color.black, 0.5f)));
+                    Vector3.one * 0.12f, WorldMaterials.MakeCharacter(WorldMaterials.Create((Texture)null, Color.Lerp(fur, Color.black, 0.5f))));
             }
 
-            var lantern = CreatePart(PrimitiveType.Cube, new Vector3(BodyRadius, BodyHeight * 0.55f, BodyRadius * 0.6f),
-                Vector3.one * 0.1f, WorldMaterials.Create((Texture)null, Color.black, new Color(1f, 0.75f, 0.4f)));
-            lantern.AddComponent<LightSource>();
         }
 
         void BuildModel(GameObject model, Texture2D breed)
         {
-            var instance = Instantiate(model, transform);
+            var instance = Instantiate(model, visual);
             instance.transform.localPosition = Vector3.zero;
             foreach (var collider in instance.GetComponentsInChildren<Collider>())
             {
@@ -323,7 +382,7 @@ namespace ZincWhiskers
                 var materials = renderer.sharedMaterials;
                 for (int i = 0; i < materials.Length; i++)
                 {
-                    materials[i] = ToWorldMaterial(materials[i], breed);
+                    materials[i] = WorldMaterials.MakeCharacter(ToWorldMaterial(materials[i], breed));
                 }
                 renderer.sharedMaterials = materials;
             }
@@ -382,17 +441,13 @@ namespace ZincWhiskers
             return bounds;
         }
 
-        // Fur gets this player's breed texture, eye shine glows, anything else keeps its imported color.
+        // Fur gets this player's breed texture, anything else keeps its imported color.
         static Material ToWorldMaterial(Material source, Texture2D breed)
         {
             string name = source != null ? source.name : "";
             if (name.StartsWith("Fur"))
             {
                 return WorldMaterials.Create(breed, Color.white);
-            }
-            if (name.StartsWith("EyeShine"))
-            {
-                return WorldMaterials.Create((Texture)null, Color.white, Color.white * 0.9f);
             }
             Color color = Color.white;
             if (source != null && source.HasProperty("_BaseColor")) color = source.GetColor("_BaseColor");
@@ -404,7 +459,7 @@ namespace ZincWhiskers
         {
             var part = GameObject.CreatePrimitive(shape);
             Destroy(part.GetComponent<Collider>());
-            part.transform.SetParent(transform, false);
+            part.transform.SetParent(visual, false);
             part.transform.localPosition = position;
             part.transform.localScale = size;
             part.GetComponent<Renderer>().sharedMaterial = material;
